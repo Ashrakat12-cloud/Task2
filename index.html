@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Newton-Raphson Solver</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--bd:#ccc;--card:#f6f6f6}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#eee;--bd:#444;--card:#222}}
+body{margin:0;padding:12px;background:var(--bg);color:var(--fg);font-family:Segoe UI,Arial,sans-serif}
+h1{font-size:20px;margin:0 0 10px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+input{padding:6px;border:1px solid var(--bd);border-radius:4px;background:var(--card);color:var(--fg)}
+button{padding:7px 18px;border:0;border-radius:4px;background:#2d6cdf;color:#fff;cursor:pointer}
+.main{display:flex;flex-wrap:wrap;gap:10px}
+pre{flex:1 1 380px;margin:0;padding:8px;height:480px;overflow:auto;background:var(--card);border:1px solid var(--bd);font:13px Consolas,monospace}
+canvas{flex:2 1 400px;height:480px;width:100%;max-width:100%;background:#fff;border:1px solid var(--bd)}
+.hint{font-size:12px;opacity:.7;margin-top:8px}
+</style>
+</head>
+<body>
+<h1>Newton-Raphson Solver</h1>
+<div class="bar">
+  f(x) = <input id="f" size="26" value="x^3 - 8*x + 5">
+  x0 = <input id="x0" size="5" value="0">
+  error &lt; <input id="tol" size="8" value="0.0001">
+  <button id="go">Solve</button>
+</div>
+<div class="main"><pre id="out"></pre><canvas id="cv"></canvas></div>
+<div class="hint">Operators: + - * / ^ and 8x, 2(x+1) · Functions: sin cos tan exp ln log sqrt abs · Constants: e, pi</div>
+<script>
+// ---------- expression parser ----------
+function compile(text){
+  if(!text.trim()) throw new Error("Function is empty");
+  const make=function(xv){
+    const s=text; let pos=0;
+    const skip=()=>{while(pos<s.length&&/\s/.test(s[pos]))pos++};
+    const peek=c=>{skip();return pos<s.length&&s[pos]===c};
+    function expr(){let v=term();for(;;){if(peek('+')){pos++;v+=term()}else if(peek('-')){pos++;v-=term()}else return v}}
+    function term(){let v=unary();for(;;){
+      if(peek('*')){pos++;v*=unary()}
+      else if(peek('/')){pos++;v/=unary()}
+      else{skip();if(pos<s.length&&(/[A-Za-z]/.test(s[pos])||s[pos]==='('))v*=unary();else return v}}}
+    function unary(){if(peek('-')){pos++;return -unary()}if(peek('+')){pos++;return unary()}return power()}
+    function power(){const b=atom();if(peek('^')){pos++;return Math.pow(b,unary())}return b}
+    function atom(){
+      skip();
+      if(pos>=s.length) throw new Error("Unexpected end of function");
+      const c=s[pos];
+      if(/[0-9.]/.test(c)){const st=pos;while(pos<s.length&&/[0-9.]/.test(s[pos]))pos++;return parseFloat(s.slice(st,pos))}
+      if(c==='('){pos++;const v=expr();if(!peek(')'))throw new Error("Missing )");pos++;return v}
+      if(/[A-Za-z]/.test(c)){
+        const st=pos;while(pos<s.length&&/[A-Za-z]/.test(s[pos]))pos++;
+        const name=s.slice(st,pos).toLowerCase();
+        if(peek('(')){
+          pos++;const a=expr();if(!peek(')'))throw new Error("Missing )");pos++;
+          const fn={sin:Math.sin,cos:Math.cos,tan:Math.tan,exp:Math.exp,ln:Math.log,log:Math.log10,sqrt:Math.sqrt,abs:Math.abs}[name];
+          if(!fn) throw new Error("Unknown function: "+name);
+          return fn(a);
+        }
+        if(name==="x") return xv;
+        if(name==="e") return Math.E;
+        if(name==="pi") return Math.PI;
+        throw new Error("Unknown name: "+name);
+      }
+      throw new Error("Unexpected '"+c+"'");
+    }
+    const v=expr();skip();
+    if(pos<s.length) throw new Error("Unexpected '"+s[pos]+"'");
+    return v;
+  };
+  make(1); // throws if syntax is wrong
+  return make;
+}
+
+const fmt=v=>v.toFixed(6);
+const pad=(t,n)=>String(t).padEnd(n);
+const ok=v=>Number.isFinite(v)&&Math.abs(v)<1e6;
+
+// ---------- solver ----------
+function run(){
+  const out=document.getElementById('out');
+  let f,x0,tol;
+  try{
+    f=compile(document.getElementById('f').value);
+    x0=parseFloat(document.getElementById('x0').value.replace(',','.'));
+    tol=parseFloat(document.getElementById('tol').value.replace(',','.'));
+    if(isNaN(x0)||isNaN(tol)) throw new Error("x0 and error must be numbers");
+  }catch(e){alert("Input error: "+e.message);return}
+
+  const df=x=>{const h=1e-6*Math.max(1,Math.abs(x));return (f(x+h)-f(x-h))/(2*h)};
+  const xs=[x0];
+  let s="f(x) = "+document.getElementById('f').value+"\nx0 = "+fmt(x0)+"\n\n";
+  s+=pad("i",4)+pad("x_i",14)+pad("f(x_i)",14)+"|x(i+1)-x(i)|\n";
+  s+=pad(0,4)+pad(fmt(x0),14)+pad(fmt(f(x0)),14)+"----\n";
+  let x=x0,conv=false;
+  for(let n=1;n<=100;n++){
+    const d=df(x);
+    if(d===0||!Number.isFinite(d)){s+="f'(x) is zero or invalid. Try another x0.\n";break}
+    const xn=x-f(x)/d;
+    if(!Number.isFinite(xn)){s+="The value blew up. Try another x0.\n";break}
+    const err=Math.abs(xn-x);
+    xs.push(xn);
+    s+=pad(n,4)+pad(fmt(xn),14)+pad(fmt(f(xn)),14)+fmt(err)+"\n";
+    x=xn;
+    if(err<tol){conv=true;break}
+  }
+  s+="\nNumber of iterations: "+(xs.length-1)+"\n";
+  s+=conv?"Root = "+fmt(x)+"\nf(root) = "+fmt(f(x))+"\n":"No convergence.\n";
+  out.textContent=s;
+  draw(f,xs,conv);
+}
+
+// ---------- graph ----------
+function draw(F,pts,hasRoot){
+  const cv=document.getElementById('cv'),dpr=window.devicePixelRatio||1;
+  const W=cv.clientWidth,H=cv.clientHeight;
+  cv.width=W*dpr;cv.height=H*dpr;
+  const g=cv.getContext('2d');g.scale(dpr,dpr);
+  g.clearRect(0,0,W,H);
+  const L=60,R=20,T=20,B=40,w=W-L-R,h=H-T-B;
+  if(w<50||h<50) return;
+  const lo=Math.min(...pts),hi=Math.max(...pts);
+  const c=(lo+hi)/2,half=Math.max((hi-lo)*0.8,2);
+  const xmin=c-half,xmax=c+half;
+  const N=400,xsS=[],ysS=[];
+  let ymin=0,ymax=0;
+  for(let i=0;i<=N;i++){const x=xmin+(xmax-xmin)*i/N,y=F(x);xsS.push(x);ysS.push(y);if(ok(y)){ymin=Math.min(ymin,y);ymax=Math.max(ymax,y)}}
+  for(const p of pts){const y=F(p);if(ok(y)){ymin=Math.min(ymin,y);ymax=Math.max(ymax,y)}}
+  if(ymax-ymin<1e-9){ymax+=1;ymin-=1}
+  const pad=(ymax-ymin)*0.1;ymin-=pad;ymax+=pad;
+  const rng=ymax-ymin;
+  const sx=x=>L+(x-xmin)/(xmax-xmin)*w, sy=y=>T+(ymax-y)/(ymax-ymin)*h;
+  g.font="12px Segoe UI, Arial";g.lineWidth=1;
+  for(let k=0;k<=5;k++){
+    const xv=xmin+(xmax-xmin)*k/5,px=sx(xv);
+    g.strokeStyle="#ddd";g.beginPath();g.moveTo(px,T);g.lineTo(px,T+h);g.stroke();
+    g.fillStyle="#000";g.fillText(+xv.toFixed(2),px-12,T+h+16);
+    const yv=ymin+(ymax-ymin)*k/5,py=sy(yv);
+    g.beginPath();g.moveTo(L,py);g.lineTo(L+w,py);g.stroke();
+    g.fillText(+yv.toFixed(2),4,py+4);
+  }
+  g.strokeStyle="#888";g.strokeRect(L,T,w,h);
+  g.strokeStyle="#000";
+  g.beginPath();g.moveTo(L,sy(0));g.lineTo(L+w,sy(0));g.stroke();
+  if(xmin<0&&xmax>0){g.beginPath();g.moveTo(sx(0),T);g.lineTo(sx(0),T+h);g.stroke()}
+  g.save();g.beginPath();g.rect(L,T,w,h);g.clip();
+  g.strokeStyle="royalblue";g.lineWidth=2;
+  let seg=[];
+  const flush=()=>{if(seg.length>=2){g.beginPath();seg.forEach((p,i)=>i?g.lineTo(p[0],p[1]):g.moveTo(p[0],p[1]));g.stroke()}seg=[]};
+  for(let i=0;i<=N;i++){const y=ysS[i];if(ok(y)&&y>ymin-3*rng&&y<ymax+3*rng)seg.push([sx(xsS[i]),sy(y)]);else flush()}
+  flush();
+  pts.forEach((p,i)=>{
+    const y=F(p);if(!ok(y))return;
+    const px=sx(p),py=sy(y);
+    g.fillStyle="red";g.beginPath();g.arc(px,py,4,0,7);g.fill();
+    g.fillStyle="darkred";g.fillText(i,px+5,py-8);
+  });
+  if(hasRoot){
+    const r=pts[pts.length-1],px=sx(r),py=sy(0);
+    g.fillStyle="limegreen";g.beginPath();g.arc(px,py,6,0,7);g.fill();
+    g.fillStyle="darkgreen";g.fillText("root = "+(+r.toFixed(5)),px+8,py+18);
+  }
+  g.restore();
+}
+
+document.getElementById('go').onclick=run;
+document.querySelectorAll('input').forEach(i=>i.addEventListener('keydown',e=>{if(e.key==='Enter')run()}));
+window.addEventListener('resize',run);
+run();
+</script>
+</body>
+</html>
